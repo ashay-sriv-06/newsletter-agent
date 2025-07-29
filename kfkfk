@@ -1,0 +1,502 @@
+import { useState, useEffect } from 'react';
+import './App.css';
+import logo from './sofi-logo.png'; // Logo is in the same directory
+import { jwtDecode } from 'jwt-decode'; // Changed from default import to named import
+
+function App() {
+  console.log("✅ App component loaded");
+  const [requests, setRequests] = useState([]);
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [user, setUser] = useState(null);
+  const [selectedRequestId, setSelectedRequestId] = useState(null);
+  const [newComment, setNewComment] = useState('');
+  const [replyingTo, setReplyingTo] = useState(null);
+  const [replyText, setReplyText] = useState('');
+  
+  // Track user votes and likes
+  const [userVotes, setUserVotes] = useState(() => {
+    const saved = localStorage.getItem('userVotes');
+    return saved ? JSON.parse(saved) : {};
+  });
+  
+  const [userLikes, setUserLikes] = useState(() => {
+    const saved = localStorage.getItem('userLikes');
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  // Save votes and likes to localStorage
+  useEffect(() => {
+    localStorage.setItem('userVotes', JSON.stringify(userVotes));
+  }, [userVotes]);
+
+  useEffect(() => {
+    localStorage.setItem('userLikes', JSON.stringify(userLikes));
+  }, [userLikes]);
+
+  useEffect(() => {
+    console.log("✅ useEffect ran");
+
+    // Initialize Google Identity Services
+    if (window.google && window.google.accounts) {
+      console.log("✅ Google SDK loaded");
+
+      try {
+        window.google.accounts.id.initialize({
+          client_id: '692573689806-ut0vc60udalo6s6h2ub0ab49lprb85o1.apps.googleusercontent.com',
+          callback: handleCallbackResponse,
+          auto_select: false,
+          cancel_on_tap_outside: true,
+          context: 'signin',
+          ux_mode: 'popup',
+          itp_support: true
+        });
+
+        // Render the Sign In button
+        window.google.accounts.id.renderButton(
+          document.getElementById('signInDiv'),
+          { 
+            theme: 'outline', 
+            size: 'large',
+            type: 'standard',
+            shape: 'rectangular',
+            text: 'signin_with',
+            logo_alignment: 'left',
+            width: 250
+          }
+        );
+
+        // Optional: Display One Tap prompt
+        window.google.accounts.id.prompt((notification) => {
+          if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
+            console.log("One Tap not displayed or was skipped");
+          }
+        });
+      } catch (error) {
+        console.error("Error initializing Google Sign-In:", error);
+      }
+    } else {
+      console.error("❌ Google SDK not loaded");
+    }
+  }, []);
+
+  const handleCallbackResponse = (response) => {
+    const userObject = jwtDecode(response.credential);
+    setUser(userObject);
+  };
+
+  const submitRequest = () => {
+    if (title.trim()) {
+      const newRequest = {
+        id: Date.now(),
+        title: title.trim(),
+        description: description.trim(),
+        user: user?.name || 'Anonymous',
+        userId: user?.sub || 'anonymous',
+        votes: 0,
+        comments: [],
+        createdAt: new Date().toISOString()
+      };
+      setRequests([newRequest, ...requests]);
+      setTitle('');
+      setDescription('');
+    }
+  };
+
+  const upvote = (id) => {
+    if (!user) {
+      alert('Please sign in to vote');
+      return;
+    }
+
+    const voteKey = `${user.sub}-${id}`;
+    const hasVoted = userVotes[voteKey];
+
+    if (hasVoted) {
+      // Remove vote
+      const updated = requests.map((req) =>
+        req.id === id ? { ...req, votes: req.votes - 1 } : req
+      );
+      setRequests(updated);
+      setUserVotes(prev => {
+        const newVotes = { ...prev };
+        delete newVotes[voteKey];
+        return newVotes;
+      });
+    } else {
+      // Add vote
+      const updated = requests.map((req) =>
+        req.id === id ? { ...req, votes: req.votes + 1 } : req
+      );
+      setRequests(updated);
+      setUserVotes(prev => ({ ...prev, [voteKey]: true }));
+    }
+  };
+
+  const logout = () => {
+    // Revoke the Google session
+    if (window.google && window.google.accounts) {
+      window.google.accounts.id.disableAutoSelect();
+      
+      // Clear the user session
+      setUser(null);
+      
+      // Optional: Revoke the token (requires the user's Google ID)
+      if (user && user.sub) {
+        window.google.accounts.id.revoke(user.sub, (response) => {
+          console.log('Token revoked');
+        });
+      }
+    }
+  };
+
+  const addComment = (requestId, text, parentId = null) => {
+    if (!user) {
+      alert('Please sign in to comment');
+      return;
+    }
+
+    const newCommentObj = {
+      id: Date.now() + Math.random(),
+      text: text.trim(),
+      user: user.name,
+      userId: user.sub,
+      likes: 0,
+      replies: [],
+      parentId: parentId,
+      createdAt: new Date().toISOString()
+    };
+
+    const updated = requests.map((req) => {
+      if (req.id === requestId) {
+        if (parentId) {
+          // Add reply to specific comment
+          const addReplyToComment = (comments) => {
+            return comments.map(comment => {
+              if (comment.id === parentId) {
+                return {
+                  ...comment,
+                  replies: [...comment.replies, newCommentObj]
+                };
+              } else if (comment.replies && comment.replies.length > 0) {
+                return {
+                  ...comment,
+                  replies: addReplyToComment(comment.replies)
+                };
+              }
+              return comment;
+            });
+          };
+          
+          return {
+            ...req,
+            comments: addReplyToComment(req.comments)
+          };
+        } else {
+          // Add top-level comment
+          return {
+            ...req,
+            comments: [...req.comments, newCommentObj]
+          };
+        }
+      }
+      return req;
+    });
+
+    setRequests(updated);
+    setNewComment('');
+    setReplyText('');
+    setReplyingTo(null);
+  };
+
+  const likeComment = (requestId, commentId) => {
+    if (!user) {
+      alert('Please sign in to like comments');
+      return;
+    }
+
+    const likeKey = `${user.sub}-${commentId}`;
+    const hasLiked = userLikes[likeKey];
+
+    const updateCommentLikes = (comments) => {
+      return comments.map(comment => {
+        if (comment.id === commentId) {
+          return {
+            ...comment,
+            likes: hasLiked ? comment.likes - 1 : comment.likes + 1
+          };
+        } else if (comment.replies && comment.replies.length > 0) {
+          return {
+            ...comment,
+            replies: updateCommentLikes(comment.replies)
+          };
+        }
+        return comment;
+      });
+    };
+
+    const updated = requests.map((req) => {
+      if (req.id === requestId) {
+        return {
+          ...req,
+          comments: updateCommentLikes(req.comments)
+        };
+      }
+      return req;
+    });
+
+    setRequests(updated);
+    
+    if (hasLiked) {
+      setUserLikes(prev => {
+        const newLikes = { ...prev };
+        delete newLikes[likeKey];
+        return newLikes;
+      });
+    } else {
+      setUserLikes(prev => ({ ...prev, [likeKey]: true }));
+    }
+  };
+
+  const renderComments = (comments, requestId, depth = 0) => {
+    const maxDepth = 2; // 0, 1, 2 = 3 levels total
+    
+    return comments.map((comment) => (
+      <div key={comment.id} style={{ marginLeft: depth > 0 ? '2rem' : '0' }}>
+        <li className="comment-item">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <strong>{comment.user}:</strong> {comment.text}
+              <div style={{ marginTop: '0.5rem' }}>
+                {depth < maxDepth ? (
+                  <button
+                    onClick={() => setReplyingTo(comment.id)}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: '#00A2C7',
+                      cursor: 'pointer',
+                      fontSize: '0.9rem',
+                      marginRight: '1rem'
+                    }}
+                  >
+                    Reply
+                  </button>
+                ) : (
+                  <span style={{ fontSize: '0.8rem', color: '#999', fontStyle: 'italic' }}>
+                    (max reply depth)
+                  </span>
+                )}
+                {comment.replies && comment.replies.length > 0 && (
+                  <span style={{ fontSize: '0.9rem', color: '#666' }}>
+                    {comment.replies.length} {comment.replies.length === 1 ? 'reply' : 'replies'}
+                  </span>
+                )}
+              </div>
+            </div>
+            <button
+              onClick={() => likeComment(requestId, comment.id)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                fontSize: '1.1rem',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.3rem',
+                color: userLikes[`${user?.sub}-${comment.id}`] ? '#6b46c1' : '#666'
+              }}
+            >
+              <span style={{
+                fontSize: '1.2rem',
+                transition: 'transform 0.1s ease'
+              }}>
+                {userLikes[`${user?.sub}-${comment.id}`] ? '▲' : '△'}
+              </span>
+              <span style={{ fontWeight: 'bold' }}>{comment.likes}</span>
+            </button>
+          </div>
+          
+          {replyingTo === comment.id && (
+            <div style={{ marginTop: '1rem', marginLeft: '1rem' }}>
+              <textarea
+                className="comment-input"
+                placeholder={`Reply to ${comment.user}...`}
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                rows={2}
+                style={{ fontSize: '0.9rem' }}
+                autoFocus
+              />
+              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                <button
+                  className="submit-comment-btn"
+                  onClick={() => {
+                    if (replyText.trim()) {
+                      addComment(requestId, replyText, comment.id);
+                    }
+                  }}
+                  style={{ padding: '0.4rem 0.8rem', fontSize: '0.9rem' }}
+                >
+                  Post Reply
+                </button>
+                <button
+                  onClick={() => {
+                    setReplyingTo(null);
+                    setReplyText('');
+                  }}
+                  style={{
+                    padding: '0.4rem 0.8rem',
+                    fontSize: '0.9rem',
+                    background: 'none',
+                    border: '1px solid #ccc',
+                    borderRadius: '6px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </li>
+        
+        {comment.replies && comment.replies.length > 0 && (
+          <ul className="comment-list" style={{ marginTop: '0.5rem' }}>
+            {renderComments(comment.replies, requestId, depth + 1)}
+          </ul>
+        )}
+      </div>
+    ));
+  };
+
+  return (
+    <div className="app">
+      <header className="header">
+        <img src={logo} alt="SoFi Logo" className="logo large-logo" />
+        <div className="header-text">
+          <h1 className="title">SoFi Feature Requests</h1>
+        </div>
+        <div className="auth-section">
+          {!user ? (
+            <div id="signInDiv"></div>
+          ) : (
+            <div className="user-info">
+              <p>Welcome, {user.name}!</p>
+              <button onClick={logout} className="logout-btn">Sign Out</button>
+            </div>
+          )}
+        </div>
+      </header>
+
+      <section className="submit-section">
+        <form
+          className="request-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitRequest();
+          }}
+        >
+          <h2 className="form-title">Submit a New Feature Request</h2>
+          <input
+            className="input"
+            type="text"
+            placeholder="Title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <textarea
+            className="input"
+            placeholder="Description (optional)"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            rows={3}
+          />
+          <button type="submit" className="submit-btn">
+            Submit Request
+          </button>
+        </form>
+      </section>
+
+      <section className="top-requests">
+        <h2>Feature Requests</h2>
+        {requests.length === 0 && (
+          <p>No feature requests yet. Be the first to submit one!</p>
+        )}
+        {requests.map((req) => {
+          const hasVoted = userVotes[`${user?.sub}-${req.id}`];
+          
+          return (
+            <div key={req.id} className="request-card">
+              <div className="request-header">
+                <div className="request-text">
+                  <h3>{req.title}</h3>
+                  {req.description && <p>{req.description}</p>}
+                  <small>Submitted by: {req.user}</small>
+                </div>
+
+                <div className="vote-section">
+                  <button
+                    className={`upvote-btn ${hasVoted ? 'voted' : ''}`}
+                    onClick={() => upvote(req.id)}
+                    style={{
+                      backgroundColor: hasVoted ? '#553c9a' : '#6b46c1'
+                    }}
+                  >
+                    {hasVoted ? '▲' : '△'} {req.votes}
+                  </button>
+                  <button
+                    className="comment-icon-btn"
+                    onClick={() =>
+                      setSelectedRequestId(
+                        selectedRequestId === req.id ? null : req.id
+                      )
+                    }
+                    title={selectedRequestId === req.id ? "Hide Comments" : "View Comments"}
+                  >
+                    🗨️ {req.comments.length > 0 && `(${req.comments.length})`}
+                  </button>
+                </div>
+              </div>
+              
+              {selectedRequestId === req.id && (
+                <div className="comment-thread">
+                  <h4>Comments</h4>
+
+                  {req.comments.length === 0 ? (
+                    <p>No comments yet. Be the first!</p>
+                  ) : (
+                    <ul className="comment-list">
+                      {renderComments(req.comments.filter(c => !c.parentId), req.id)}
+                    </ul>
+                  )}
+
+                  <textarea
+                    className="comment-input"
+                    placeholder="Add a comment..."
+                    value={newComment}
+                    onChange={(e) => setNewComment(e.target.value)}
+                    rows={3}
+                  />
+
+                  <button
+                    className="submit-comment-btn"
+                    onClick={() => {
+                      if (newComment.trim()) {
+                        addComment(req.id, newComment);
+                      }
+                    }}
+                  >
+                    Post Comment
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </section>
+    </div>
+  );
+}
+
+export default App;
